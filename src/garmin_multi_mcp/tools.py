@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 from typing import Any
 
+import matplotlib
+matplotlib.use("Agg")  # headless — no display needed
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+
 from mcp.server.fastmcp import Context, FastMCP
-from mcp.types import CallToolResult
+from mcp.types import CallToolResult, ImageContent
 
 from garmin_multi_mcp.auth.oidc import get_current_principal
 from garmin_multi_mcp.auth.policy import AuthorizationPolicy
@@ -1109,6 +1116,199 @@ def register_tools(
                     "normal_range": "95-100%",
                 },
             }))
+        except Exception as err:
+            return service_error_result(str(err))
+
+    # -----------------------------------------------------------------------
+    # Chart Tools
+    # -----------------------------------------------------------------------
+
+    @app.tool(
+        annotations={
+            "title": "Generate Activity Performance Chart",
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+            "destructiveHint": False,
+        },
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def generate_activity_chart(
+        account_id: str,
+        activity_id: int,
+        max_datapoints: int = 500,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Generate a 6-panel performance chart for one activity and return it as a PNG image.
+
+        Panels (all plotted over distance):
+          1. Heart Rate (bpm) with zone reference lines
+          2. Pace (min/km, inverted axis)
+          3. Cadence (spm) with 180 spm reference
+          4. Running Power (W)
+          5. Stride Length (cm)
+          6. Ground Contact Time (ms) + Vertical Oscillation (cm)
+
+        Returns an inline PNG image. If a required metric is absent the panel is omitted.
+        """
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+
+            # ── fetch timeseries ──────────────────────────────────────────
+            raw = client.get_activity_details(activity_id, maxchart=max_datapoints, maxpoly=0)
+            if not raw:
+                return _json({"account_id": account_id, "activity_id": activity_id,
+                              "message": "No detail data available"})
+
+            descriptors = raw.get("metricDescriptors", [])
+            key_index = {d["key"]: i for i, d in enumerate(descriptors)}
+
+            def _get(row: list, key: str):
+                idx = key_index.get(key)
+                return row[idx] if idx is not None else None
+
+            def _r(v, digits=1):
+                return round(v, digits) if v else None
+
+            ts = []
+            for item in raw.get("activityDetailMetrics", []):
+                m = item["metrics"]
+                cadence = _get(m, "directDoubleCadence") or ((_get(m, "directRunCadence") or 0) * 2 or None)
+                ts.append({
+                    "d": _get(m, "sumDistance"),
+                    "hr": _get(m, "directHeartRate"),
+                    "spd": _get(m, "directSpeed"),
+                    "cad": cadence,
+                    "pwr": _get(m, "directPower"),
+                    "stride": _get(m, "directStrideLength"),
+                    "gct": _get(m, "directGroundContactTime"),
+                    "vo": _get(m, "directVerticalOscillation"),
+                })
+
+            def col(xkey: str, ykey: str, yfn=None):
+                """Return (x_km_list, y_list) for non-null pairs."""
+                pairs = [
+                    (p[xkey] / 1000, yfn(p[ykey]) if yfn else p[ykey])
+                    for p in ts
+                    if p.get(xkey) is not None and p.get(ykey) is not None
+                ]
+                return [x for x, y in pairs], [y for x, y in pairs]
+
+            # ── fetch activity summary for title ──────────────────────────
+            act = client.get_activity(activity_id) or {}
+            summary = act.get("summaryDTO", {})
+            name = act.get("activityName", f"Activity {activity_id}")
+            dist_km = (summary.get("distance") or 0) / 1000
+            dur_min = int((summary.get("duration") or 0) / 60)
+            date_str = (summary.get("startTimeLocal") or "")[:10]
+            title = f"{name}  |  {date_str}  |  {dist_km:.1f} km  |  {dur_min} min"
+
+            # ── build figure ──────────────────────────────────────────────
+            fig = plt.figure(figsize=(14, 20))
+            fig.suptitle(title, fontsize=13, fontweight="bold", y=0.99)
+            gs = gridspec.GridSpec(6, 1, figure=fig, hspace=0.5)
+
+            def _stat(yd):
+                if not yd:
+                    return "no data"
+                return f"avg {sum(yd)/len(yd):.1f}  max {max(yd):.1f}  min {min(yd):.1f}"
+
+            def plot_panel(ax, xd, yd, label, unit, color, fill=False, hlines=None, ylim=None, invert=False):
+                if not xd:
+                    ax.text(0.5, 0.5, f"{label}: no data", ha="center", va="center",
+                            transform=ax.transAxes, color="gray")
+                    return
+                ax.plot(xd, yd, color=color, linewidth=1.3, alpha=0.9)
+                if fill:
+                    ax.fill_between(xd, yd, alpha=0.18, color=color)
+                if hlines:
+                    for v, ls in hlines:
+                        ax.axhline(v, color="gray", linestyle=ls, linewidth=0.8, alpha=0.5)
+                if ylim:
+                    ax.set_ylim(*ylim)
+                if invert:
+                    ax.invert_yaxis()
+                ax.set_ylabel(f"{label} ({unit})", fontsize=9)
+                ax.grid(True, alpha=0.3)
+                ax.tick_params(labelsize=8)
+                ax.set_title(_stat(yd), fontsize=8, loc="right", color="#555")
+
+            # 1. Heart Rate
+            ax1 = fig.add_subplot(gs[0])
+            xd, yd = col("d", "hr")
+            plot_panel(ax1, xd, yd, "Heart Rate", "bpm", "#e74c3c", fill=True,
+                       hlines=[(115, "--"), (148, "--"), (162, "--")], ylim=(50, 185))
+            if xd:
+                for val, label in [(115, "Z2"), (148, "Z4"), (162, "Z5")]:
+                    ax1.annotate(label, xy=(0.01, val), xycoords=("axes fraction", "data"),
+                                 fontsize=7, color="gray", va="bottom")
+
+            # 2. Pace
+            ax2 = fig.add_subplot(gs[1])
+            xd2, yd2 = col("d", "spd")
+            pace_pairs = [(x, 16.667 / v) for x, v in zip(xd2, yd2) if v > 0.5 and 16.667 / v < 12]
+            xp, yp = [x for x, y in pace_pairs], [y for x, y in pace_pairs]
+            plot_panel(ax2, xp, yp, "Pace", "min/km", "#2980b9", fill=True, invert=True)
+
+            # 3. Cadence
+            ax3 = fig.add_subplot(gs[2])
+            xd, yd = col("d", "cad")
+            plot_panel(ax3, xd, yd, "Cadence", "spm", "#27ae60",
+                       hlines=[(180, "--")], ylim=(80, 210))
+
+            # 4. Running Power
+            ax4 = fig.add_subplot(gs[3])
+            xd, yd = col("d", "pwr")
+            plot_panel(ax4, xd, yd, "Running Power", "W", "#8e44ad", fill=True)
+
+            # 5. Stride Length
+            ax5 = fig.add_subplot(gs[4])
+            xd, yd = col("d", "stride")
+            plot_panel(ax5, xd, yd, "Stride Length", "cm", "#e67e22")
+
+            # 6. GCT + Vertical Oscillation (dual axis)
+            ax6 = fig.add_subplot(gs[5])
+            xd_gct, yd_gct = col("d", "gct")
+            xd_vo, yd_vo = col("d", "vo")
+            if xd_gct:
+                ax6.plot(xd_gct, yd_gct, color="#16a085", linewidth=1.3, label="GCT (ms)")
+                ax6.set_ylabel("Ground Contact (ms)", fontsize=9, color="#16a085")
+                ax6.tick_params(axis="y", labelcolor="#16a085", labelsize=8)
+                ax6.set_title(f"GCT {_stat(yd_gct)}", fontsize=8, loc="right", color="#555")
+            if xd_vo:
+                ax6b = ax6.twinx()
+                ax6b.plot(xd_vo, yd_vo, color="#c0392b", linewidth=1.3,
+                          linestyle="--", label="Vert. Osc. (cm)", alpha=0.85)
+                ax6b.set_ylabel("Vertical Oscillation (cm)", fontsize=9, color="#c0392b")
+                ax6b.tick_params(axis="y", labelcolor="#c0392b", labelsize=8)
+            ax6.grid(True, alpha=0.3)
+            ax6.tick_params(axis="x", labelsize=8)
+            ax6.set_xlabel("Distance (km)", fontsize=9)
+
+            # hide x-tick labels on all but last panel
+            for ax in [ax1, ax2, ax3, ax4, ax5]:
+                ax.set_xticklabels([])
+
+            # ── render to PNG bytes ───────────────────────────────────────
+            buf = io.BytesIO()
+            plt.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor="white")
+            plt.close(fig)
+            buf.seek(0)
+            png_b64 = base64.b64encode(buf.read()).decode()
+
+            return CallToolResult(content=[
+                ImageContent(type="image", data=png_b64, mimeType="image/png")
+            ])
+
         except Exception as err:
             return service_error_result(str(err))
 
