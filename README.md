@@ -111,8 +111,8 @@ export GARMIN_ACCOUNTS_FILE=config/accounts.yaml
 export MCP_TRANSPORT=http
 export MCP_HOST=0.0.0.0
 export PORT=38080
-export MCP_ALLOWED_HOSTS="192.168.68.61:*,mcp.chengyi.homes,mcp.chengyi.homes:*"
-export MCP_ALLOWED_ORIGINS="http://192.168.68.61:*,https://mcp.chengyi.homes,https://mcp.chengyi.homes:*,https://chatgpt.com,https://chat.openai.com"
+export MCP_ALLOWED_HOSTS="192.168.1.100:*,mcp.example.com,mcp.example.com:*"
+export MCP_ALLOWED_ORIGINS="http://192.168.1.100:*,https://mcp.example.com,https://mcp.example.com:*,https://chatgpt.com,https://chat.openai.com"
 garmin-multi-mcp
 ```
 
@@ -152,8 +152,8 @@ MCP_ALLOWED_ORIGINS
 
 目前 `docker-compose.yml` 已預設包含：
 
-- `192.168.68.61`
-- `mcp.chengyi.homes`
+- `192.168.1.100`（範例 LAN IP，請依實際環境修改）
+- `mcp.example.com`（範例網域，請替換為你的網域）
 
 ## 5. 連到 ChatGPT Web
 

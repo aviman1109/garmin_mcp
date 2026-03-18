@@ -181,7 +181,7 @@ def _load_oidc_config(data: dict[str, Any]) -> OIDCConfig:
     authorization_url = (
         os.getenv("GARMIN_OIDC_AUTHORIZATION_URL")
         or raw_auth.get("authorization_url")
-        or "https://oauth.chengyi.homes/authenticate/?auth_target=garmin"
+        or None
     )
     accounts_read_scope = (
         os.getenv("GARMIN_OIDC_ACCOUNTS_READ_SCOPE")
