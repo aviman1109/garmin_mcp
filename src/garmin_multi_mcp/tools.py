@@ -489,17 +489,29 @@ def register_tools(
             laps = (splits or {}).get("lapDTOs", [])
             curated_laps = []
             for lap in laps:
-                summary = lap.get("summaryDTO", {})
                 curated_laps.append(
                     _clean(
                         {
                             "lap": lap.get("lapIndex"),
-                            "distance_meters": summary.get("distance"),
-                            "duration_seconds": summary.get("elapsedDuration"),
-                            "avg_speed_mps": summary.get("averageSpeed"),
-                            "avg_hr_bpm": summary.get("averageHR"),
-                            "max_hr_bpm": summary.get("maxHR"),
-                            "calories": summary.get("calories"),
+                            "start_time": lap.get("startTimeGMT"),
+                            "distance_meters": lap.get("distance"),
+                            "duration_seconds": lap.get("elapsedDuration"),
+                            "moving_duration_seconds": lap.get("movingDuration"),
+                            "avg_speed_mps": lap.get("averageSpeed"),
+                            "max_speed_mps": lap.get("maxSpeed"),
+                            "avg_hr_bpm": lap.get("averageHR"),
+                            "max_hr_bpm": lap.get("maxHR"),
+                            "avg_cadence_spm": lap.get("averageRunCadence"),
+                            "max_cadence_spm": lap.get("maxRunCadence"),
+                            "calories": lap.get("calories"),
+                            "elevation_gain_m": lap.get("elevationGain"),
+                            "avg_power_watts": lap.get("averagePower"),
+                            "normalized_power_watts": lap.get("normalizedPower"),
+                            "stride_length_m": lap.get("strideLength"),
+                            "vertical_oscillation_mm": lap.get("verticalOscillation"),
+                            "ground_contact_time_ms": lap.get("groundContactTime"),
+                            "grade_adjusted_speed_mps": lap.get("avgGradeAdjustedSpeed"),
+                            "intensity": lap.get("intensityType"),
                         }
                     )
                 )
