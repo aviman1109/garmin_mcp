@@ -515,4 +515,299 @@ def register_tools(
         except Exception as err:
             return service_error_result(str(err))
 
+    # -----------------------------------------------------------------------
+    # P1 Tools
+    # -----------------------------------------------------------------------
+
+    @app.tool(
+        annotations=_read_annotations("Get Activity Time-Series Details"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def get_activity_details(
+        account_id: str,
+        activity_id: int,
+        max_datapoints: int = 1000,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Get per-second time-series for one activity: heart rate, cadence, pace, power, stride length, elevation.
+
+        Returns a list of data points, each with named metric fields.
+        Use max_datapoints to limit response size (default 1000, max ~2000).
+        """
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            raw = client.get_activity_details(activity_id, maxchart=max_datapoints, maxpoly=0)
+            if not raw:
+                return _json({"account_id": account_id, "activity_id": activity_id, "message": "No detail data available"})
+
+            descriptors = raw.get("metricDescriptors", [])
+            key_index = {d["key"]: i for i, d in enumerate(descriptors)}
+
+            def _get(row: list, key: str):
+                idx = key_index.get(key)
+                return row[idx] if idx is not None else None
+
+            points = []
+            for item in raw.get("activityDetailMetrics", []):
+                m = item["metrics"]
+                ts_ms = _get(m, "directTimestamp")
+                points.append(_clean({
+                    "timestamp_ms": int(ts_ms) if ts_ms else None,
+                    "elapsed_seconds": _get(m, "sumElapsedDuration"),
+                    "distance_meters": _get(m, "sumDistance"),
+                    "heart_rate_bpm": _get(m, "directHeartRate"),
+                    "cadence_spm": _get(m, "directDoubleCadence") or (
+                        (_get(m, "directRunCadence") or 0) * 2 or None
+                    ),
+                    "speed_mps": _get(m, "directSpeed"),
+                    "grade_adjusted_speed_mps": _get(m, "directGradeAdjustedSpeed"),
+                    "elevation_m": _get(m, "directElevation"),
+                    "power_watts": _get(m, "directPower"),
+                    "stride_length_m": _get(m, "directStrideLength"),
+                    "vertical_oscillation_mm": _get(m, "directVerticalOscillation"),
+                    "ground_contact_time_ms": _get(m, "directGroundContactTime"),
+                    "vertical_ratio_pct": _get(m, "directVerticalRatio"),
+                    "performance_condition": _get(m, "directPerformanceCondition"),
+                    "body_battery": _get(m, "directBodyBattery"),
+                }))
+
+            available_metrics = [d["key"] for d in descriptors]
+            return _json({
+                "account_id": account_id,
+                "activity_id": activity_id,
+                "total_datapoints": raw.get("totalMetricsCount", len(points)),
+                "returned_datapoints": len(points),
+                "available_metrics": available_metrics,
+                "timeseries": points,
+            })
+        except Exception as err:
+            return service_error_result(str(err))
+
+    @app.tool(
+        annotations=_read_annotations("Get Training Status"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def get_training_status(
+        account_id: str,
+        date: str,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Get training status for a date: VO2max, training load balance (aerobic low/high/anaerobic), and heat/altitude acclimatisation."""
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            raw = client.get_training_status(date)
+            if not raw:
+                return _json({"account_id": account_id, "date": date, "message": "No training status data"})
+
+            vo2_generic = (raw.get("mostRecentVO2Max") or {}).get("generic") or {}
+            vo2_cycling = (raw.get("mostRecentVO2Max") or {}).get("cycling") or {}
+
+            tlb_map = (raw.get("mostRecentTrainingLoadBalance") or {}).get("metricsTrainingLoadBalanceDTOMap") or {}
+            load_entries = []
+            for device_id, entry in tlb_map.items():
+                load_entries.append(_clean({
+                    "calendar_date": entry.get("calendarDate"),
+                    "aerobic_low_load": entry.get("monthlyLoadAerobicLow"),
+                    "aerobic_high_load": entry.get("monthlyLoadAerobicHigh"),
+                    "anaerobic_load": entry.get("monthlyLoadAnaerobic"),
+                    "training_load_balance_label": entry.get("trainingLoadBalanceDesc"),
+                    "training_load_feedback": entry.get("trainingLoadBalanceFeedback"),
+                    "load_7_day": entry.get("weeklyLoadAerobicLow", 0) + entry.get("weeklyLoadAerobicHigh", 0) + entry.get("weeklyLoadAnaerobic", 0),
+                    "optimal_load_low": entry.get("optimalLoadRangeLow"),
+                    "optimal_load_high": entry.get("optimalLoadRangeHigh"),
+                    "recovery_time_seconds": entry.get("primaryActivityRecoveryTime"),
+                }))
+
+            return _json(_clean({
+                "account_id": account_id,
+                "date": date,
+                "vo2max_running": vo2_generic.get("vo2MaxValue"),
+                "vo2max_running_precise": vo2_generic.get("vo2MaxPreciseValue"),
+                "vo2max_cycling": vo2_cycling.get("vo2MaxValue"),
+                "vo2max_date": vo2_generic.get("calendarDate"),
+                "training_load_balance": load_entries,
+            }))
+        except Exception as err:
+            return service_error_result(str(err))
+
+    @app.tool(
+        annotations=_read_annotations("Get Max Metrics (VO2max)"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def get_max_metrics(
+        account_id: str,
+        date: str,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Get VO2max and fitness age metrics for a date (running and cycling)."""
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            raw = client.get_max_metrics(date)
+            if not raw:
+                return _json({"account_id": account_id, "date": date, "message": "No max metrics data"})
+
+            results = []
+            for entry in raw:
+                generic = entry.get("generic") or {}
+                cycling = entry.get("cycling") or {}
+                results.append(_clean({
+                    "vo2max_running": generic.get("vo2MaxValue"),
+                    "vo2max_running_precise": generic.get("vo2MaxPreciseValue"),
+                    "vo2max_date": generic.get("calendarDate"),
+                    "fitness_age": generic.get("fitnessAge"),
+                    "fitness_age_description": generic.get("fitnessAgeDescription"),
+                    "vo2max_cycling": cycling.get("vo2MaxValue"),
+                    "vo2max_cycling_precise": cycling.get("vo2MaxPreciseValue"),
+                    "vo2max_cycling_date": cycling.get("calendarDate"),
+                }))
+
+            return _json({"account_id": account_id, "date": date, "metrics": results})
+        except Exception as err:
+            return service_error_result(str(err))
+
+    @app.tool(
+        annotations=_read_annotations("Get Endurance Score"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def get_endurance_score(
+        account_id: str,
+        start_date: str,
+        end_date: str,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Get endurance score trend over a date range (weekly groups).
+
+        Returns average/max endurance score and weekly breakdown with contribution
+        percentages by sport (running, cycling, etc.).
+        Recommended range: 4–12 weeks.
+        """
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            raw = client.get_endurance_score(start_date, end_date)
+            if not raw:
+                return _json({"account_id": account_id, "message": "No endurance score data"})
+
+            # Map Garmin group IDs to sport names
+            group_names = {0: "running", 1: "cycling", 2: "swimming", 3: "other_cardio",
+                           4: "walking", 5: "hiking", 6: "strength", 7: "other", 8: "rest"}
+
+            weekly = []
+            for week_start, group in sorted((raw.get("groupMap") or {}).items()):
+                contributors = [
+                    _clean({
+                        "sport": group_names.get(c.get("group"), f"group_{c.get('group')}"),
+                        "contribution_pct": round(c.get("contribution", 0), 1),
+                    })
+                    for c in (group.get("enduranceContributorDTOList") or [])
+                ]
+                weekly.append({
+                    "week_start": week_start,
+                    "avg_score": group.get("groupAverage"),
+                    "max_score": group.get("groupMax"),
+                    "contributors": contributors,
+                })
+
+            return _json({
+                "account_id": account_id,
+                "start_date": start_date,
+                "end_date": end_date,
+                "period_avg": raw.get("avg"),
+                "period_max": raw.get("max"),
+                "weeks": weekly,
+            })
+        except Exception as err:
+            return service_error_result(str(err))
+
+    @app.tool(
+        annotations=_read_annotations("Get HRV Data"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def get_hrv_data(
+        account_id: str,
+        date: str,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Get nightly HRV (Heart Rate Variability) data for a date.
+
+        Returns summary stats (weekly avg, last night avg, 5-min high, status,
+        baseline range) plus the full 5-minute reading timeseries.
+        """
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            raw = client.get_hrv_data(date)
+            if not raw:
+                return _json({"account_id": account_id, "date": date, "message": "No HRV data available for this date"})
+
+            summary = raw.get("hrvSummary") or {}
+            baseline = summary.get("baseline") or {}
+            readings = [
+                _clean({
+                    "time_local": r.get("readingTimeLocal"),
+                    "hrv_ms": r.get("hrvValue"),
+                })
+                for r in (raw.get("hrvReadings") or [])
+            ]
+
+            return _json(_clean({
+                "account_id": account_id,
+                "date": date,
+                "status": summary.get("status"),
+                "feedback": summary.get("feedbackPhrase"),
+                "last_night_avg_ms": summary.get("lastNightAvg"),
+                "last_night_5min_high_ms": summary.get("lastNight5MinHigh"),
+                "weekly_avg_ms": summary.get("weeklyAvg"),
+                "baseline_low_upper_ms": baseline.get("lowUpper"),
+                "baseline_balanced_low_ms": baseline.get("balancedLow"),
+                "baseline_balanced_upper_ms": baseline.get("balancedUpper"),
+                "reading_count": len(readings),
+                "readings": readings,
+            }))
+        except Exception as err:
+            return service_error_result(str(err))
+
     return app
