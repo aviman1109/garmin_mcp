@@ -1312,4 +1312,240 @@ def register_tools(
         except Exception as err:
             return service_error_result(str(err))
 
+    @app.tool(
+        annotations=_read_annotations("Get Body Battery Data"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def get_body_battery(
+        account_id: str,
+        date: str,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Get Body Battery timeseries and events for a date.
+
+        Returns charged/drained totals, the full BB value array
+        ([timestamp_ms, bb_value]), and activity/sleep events that
+        caused significant changes.
+        """
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            raw = client.get_body_battery(date)
+            if not raw:
+                return _json({"account_id": account_id, "date": date,
+                              "message": "No Body Battery data available"})
+
+            day = raw[0]
+            bb_arr = day.get("bodyBatteryValuesArray") or []
+            # Each entry: [timestamp_ms, "MEASURED"/"PROJECTED", bb_value, stress_float]
+            readings = [
+                {"t": v[0], "bb": v[2]}
+                for v in bb_arr
+                if len(v) >= 3 and v[2] is not None
+            ]
+
+            events = [
+                _clean({
+                    "type": e.get("eventType"),
+                    "start_gmt": e.get("eventStartTimeGmt"),
+                    "duration_min": round(e.get("durationInMilliseconds", 0) / 60000, 1),
+                    "bb_impact": e.get("bodyBatteryImpact"),
+                    "feedback": e.get("shortFeedback"),
+                })
+                for e in (day.get("bodyBatteryActivityEvent") or [])
+            ]
+
+            return _json(_clean({
+                "account_id": account_id,
+                "date": date,
+                "charged": day.get("charged"),
+                "drained": day.get("drained"),
+                "reading_count": len(readings),
+                "readings": readings,
+                "events": events,
+                "legend": {"readings": "[{t: timestamp_ms, bb: body_battery_0-100}]"},
+            }))
+        except Exception as err:
+            return service_error_result(str(err))
+
+    @app.tool(
+        annotations={
+            "title": "Generate Daily Wellness Chart",
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+            "destructiveHint": False,
+        },
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def generate_daily_wellness_chart(
+        account_id: str,
+        date: str,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Generate a daily wellness chart as a PNG image.
+
+        Two panels (x-axis = local time):
+          1. Body Battery — line chart with fill; green = charging, red = draining
+          2. Stress — bar chart; blue = rest, orange = medium/high stress, grey = activity
+
+        Activity and sleep event markers are shown as vertical dashed lines.
+        """
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            import datetime as dt
+
+            client = manager.get_client(account_id)
+
+            # get_all_day_stress returns both BB and stress in one call
+            raw = client.get_all_day_stress(date)
+            bb_raw = client.get_body_battery(date)
+
+            if not raw:
+                return _json({"account_id": account_id, "date": date,
+                              "message": "No wellness data available"})
+
+            # ── parse timestamps to local datetime ────────────────────────
+            def ts_to_local(ts_ms: int):
+                return dt.datetime.fromtimestamp(ts_ms / 1000)
+
+            bb_arr = raw.get("bodyBatteryValuesArray") or []
+            st_arr = raw.get("stressValuesArray") or []
+
+            bb_times = [ts_to_local(v[0]) for v in bb_arr if len(v) >= 3 and v[2] is not None]
+            bb_vals  = [v[2] for v in bb_arr if len(v) >= 3 and v[2] is not None]
+
+            st_times = [ts_to_local(v[0]) for v in st_arr if len(v) >= 2 and v[1] >= 0]
+            st_vals  = [v[1] for v in st_arr if len(v) >= 2 and v[1] >= 0]
+
+            # activity/sleep events for vertical markers
+            events = []
+            if bb_raw:
+                for e in (bb_raw[0].get("bodyBatteryActivityEvent") or []):
+                    gmt_str = e.get("eventStartTimeGmt", "").replace(".0", "")
+                    try:
+                        offset_ms = e.get("timezoneOffset", 0)
+                        gmt_dt = dt.datetime.strptime(gmt_str, "%Y-%m-%dT%H:%M:%S")
+                        local_dt = gmt_dt + dt.timedelta(milliseconds=offset_ms)
+                        events.append({
+                            "time": local_dt,
+                            "type": e.get("eventType", ""),
+                            "impact": e.get("bodyBatteryImpact", 0),
+                        })
+                    except Exception:
+                        pass
+
+            # ── figure ────────────────────────────────────────────────────
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), sharex=True,
+                                           gridspec_kw={"height_ratios": [2, 1]})
+            fig.suptitle(f"Daily Wellness — {date}  |  {account_id}", fontsize=13,
+                         fontweight="bold")
+            fig.subplots_adjust(hspace=0.08)
+
+            # ── Panel 1: Body Battery ─────────────────────────────────────
+            if bb_times and bb_vals:
+                # colour segments: green when rising, red when falling
+                for i in range(1, len(bb_times)):
+                    color = "#2ecc71" if bb_vals[i] >= bb_vals[i - 1] else "#e74c3c"
+                    ax1.fill_between(
+                        [bb_times[i - 1], bb_times[i]],
+                        [bb_vals[i - 1], bb_vals[i]],
+                        alpha=0.4, color=color, linewidth=0,
+                    )
+                ax1.plot(bb_times, bb_vals, color="#2c3e50", linewidth=1.5, zorder=3)
+                ax1.set_ylim(0, 105)
+                ax1.set_ylabel("Body Battery", fontsize=10)
+                for lv in [25, 50, 75]:
+                    ax1.axhline(lv, color="gray", linestyle=":", linewidth=0.7, alpha=0.5)
+                charged = raw.get("charged") or (bb_raw[0].get("charged") if bb_raw else None)
+                drained = raw.get("drained") or (bb_raw[0].get("drained") if bb_raw else None)
+                info = []
+                if charged: info.append(f"+{charged} charged")
+                if drained: info.append(f"-{drained} drained")
+                if info:
+                    ax1.set_title("  ".join(info), fontsize=9, loc="right", color="#555")
+
+            # ── Panel 2: Stress ───────────────────────────────────────────
+            if st_times and st_vals:
+                # colour: blue=rest(0-25), orange=low(26-50), red=high(51-100)
+                colors = []
+                for v in st_vals:
+                    if v <= 25:
+                        colors.append("#3498db")
+                    elif v <= 50:
+                        colors.append("#f39c12")
+                    else:
+                        colors.append("#e74c3c")
+
+                # bar width ≈ interval between readings
+                interval = (st_times[1] - st_times[0]).total_seconds() / 86400 if len(st_times) > 1 else 1 / 480
+                ax2.bar(st_times, st_vals, width=interval, color=colors, alpha=0.8, align="edge")
+                ax2.set_ylim(0, 105)
+                ax2.set_ylabel("Stress Level", fontsize=10)
+                ax2.axhline(25, color="#3498db", linestyle=":", linewidth=0.7, alpha=0.5)
+                ax2.axhline(50, color="#f39c12", linestyle=":", linewidth=0.7, alpha=0.5)
+                avg_st = raw.get("avgStressLevel")
+                max_st = raw.get("maxStressLevel")
+                if avg_st:
+                    ax2.set_title(f"avg {avg_st}  max {max_st}", fontsize=9, loc="right", color="#555")
+
+                # legend
+                from matplotlib.patches import Patch
+                legend_elements = [
+                    Patch(facecolor="#3498db", alpha=0.8, label="Rest (0-25)"),
+                    Patch(facecolor="#f39c12", alpha=0.8, label="Low stress (26-50)"),
+                    Patch(facecolor="#e74c3c", alpha=0.8, label="High stress (51+)"),
+                ]
+                ax2.legend(handles=legend_elements, fontsize=7, loc="upper right")
+
+            # ── Event markers on both panels ──────────────────────────────
+            for e in events:
+                label = e["type"].title()
+                impact_str = f"  {e['impact']:+d}" if e["impact"] else ""
+                for ax in [ax1, ax2]:
+                    ax.axvline(e["time"], color="#8e44ad", linestyle="--",
+                               linewidth=1.0, alpha=0.6)
+                ax1.annotate(f"{label}{impact_str}",
+                             xy=(e["time"], 100), fontsize=7, color="#8e44ad",
+                             rotation=90, va="top", ha="right")
+
+            # ── x-axis formatting ─────────────────────────────────────────
+            import matplotlib.dates as mdates
+            ax2.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+            ax2.xaxis.set_major_locator(mdates.HourLocator(interval=2))
+            plt.setp(ax2.xaxis.get_majorticklabels(), rotation=0, fontsize=8)
+            ax2.set_xlabel("Local Time", fontsize=9)
+            for ax in [ax1, ax2]:
+                ax.grid(True, alpha=0.25)
+                ax.tick_params(axis="y", labelsize=8)
+
+            buf = io.BytesIO()
+            plt.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor="white")
+            plt.close(fig)
+            buf.seek(0)
+            png_b64 = base64.b64encode(buf.read()).decode()
+
+            return CallToolResult(content=[
+                ImageContent(type="image", data=png_b64, mimeType="image/png")
+            ])
+
+        except Exception as err:
+            return service_error_result(str(err))
+
     return app
