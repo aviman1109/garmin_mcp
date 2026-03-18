@@ -1,0 +1,19 @@
+token_root: /data/tokens
+default_account_id: jason
+
+accounts:
+  - account_id: jason
+    label: Jason Garmin
+    token_path: /data/tokens/jason
+    token_base64_path: /data/tokens/jason.b64
+    is_cn: false
+    email_file: /run/secrets/garmin_jason_email
+    password_file: /run/secrets/garmin_jason_password
+
+  - account_id: bob
+    label: Bob Garmin
+    token_path: /data/tokens/bob
+    token_base64_path: /data/tokens/bob.b64
+    is_cn: false
+    email_file: /run/secrets/garmin_bob_email
+    password_file: /run/secrets/garmin_bob_password

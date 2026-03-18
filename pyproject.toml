@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "garmin-multi-mcp"
+version = "0.1.0"
+description = "Multi-account Garmin MCP server"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "garminconnect==0.2.38",
+    "garth>=0.5.17,<0.6.0",
+    "mcp>=1.23.0",
+    "PyYAML>=6.0.2",
+    "python-dotenv==1.0.1",
+    "requests==2.32.4",
+    "uvicorn>=0.30.0",
+]
+
+[project.scripts]
+garmin-multi-mcp = "garmin_multi_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/garmin_multi_mcp"]
