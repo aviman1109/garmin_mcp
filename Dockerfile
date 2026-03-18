@@ -11,11 +11,14 @@ ENV PYTHONUNBUFFERED=1 \
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY config ./config
+COPY tests ./tests
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel hatchling && \
-    pip install --no-cache-dir .
+    pip install --no-cache-dir ".[test]"
 
 RUN mkdir -p /data/tokens /app/config
+# To run functional tests (requires valid tokens mounted):
+#   docker exec <container> pytest tests/ -v
 
 EXPOSE 38081
 
