@@ -834,4 +834,282 @@ def register_tools(
         except Exception as err:
             return service_error_result(str(err))
 
+    # -----------------------------------------------------------------------
+    # P2 Tools
+    # -----------------------------------------------------------------------
+
+    @app.tool(
+        annotations=_read_annotations("Get Sleep Data"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def get_sleep_data(
+        account_id: str,
+        date: str,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Get sleep data for a date: stages (deep/light/REM/awake), sleep score, and breath tracking.
+
+        Returns daily sleep summary and per-stage duration breakdown.
+        """
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            raw = client.get_sleep_data(date)
+            if not raw:
+                return _json({"account_id": account_id, "date": date, "message": "No sleep data available"})
+
+            dto = raw.get("dailySleepDTO") or {}
+            scores = dto.get("sleepScores") or {}
+
+            # Stage seconds
+            stages = _clean({
+                "deep_seconds": dto.get("deepSleepSeconds"),
+                "light_seconds": dto.get("lightSleepSeconds"),
+                "rem_seconds": dto.get("remSleepSeconds"),
+                "awake_seconds": dto.get("awakeSleepSeconds"),
+                "total_sleep_seconds": dto.get("sleepTimeSeconds"),
+                "total_duration_seconds": dto.get("totalSleepSeconds") or dto.get("sleepTimeSeconds"),
+            })
+
+            # Score block (structure varies by firmware)
+            score_summary = None
+            if isinstance(scores, dict) and "overall" in scores:
+                score_summary = _clean({
+                    "overall": (scores.get("overall") or {}).get("value"),
+                    "quality": (scores.get("qualityOfSleep") or {}).get("value"),
+                    "recovery": (scores.get("recoveryIndex") or {}).get("value"),
+                    "rem_percentage": (scores.get("remPercentage") or {}).get("value"),
+                    "restlessness": (scores.get("restlessness") or {}).get("value"),
+                })
+
+            # Breathing disturbances summary
+            breathing = _clean({
+                "avg_waking_respiration": dto.get("avgWakingRespirationValue"),
+                "avg_sleep_respiration": dto.get("avgSleepingRespirationValue"),
+                "highest_respiration": dto.get("highestRespirationValue"),
+                "lowest_respiration": dto.get("lowestRespirationValue"),
+            })
+
+            return _json(_clean({
+                "account_id": account_id,
+                "date": date,
+                "sleep_start_local": dto.get("sleepStartTimestampLocal"),
+                "sleep_end_local": dto.get("sleepEndTimestampLocal"),
+                "stages": stages,
+                "score": score_summary,
+                "breathing": breathing if any(breathing.values()) else None,
+                "avg_spo2": dto.get("averageSpO2Value"),
+                "avg_hrv_ms": dto.get("avgSleepStress"),  # approximation via sleep stress
+            }))
+        except Exception as err:
+            return service_error_result(str(err))
+
+    @app.tool(
+        annotations=_read_annotations("Get Full-Day Heart Rate Timeseries"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def get_heart_rates(
+        account_id: str,
+        date: str,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Get full-day heart rate timeseries for a date (15-minute interval readings).
+
+        Returns resting HR, max/min for the day, and the per-interval readings array.
+        Each reading is [timestamp_ms, hr_bpm] or null if no data.
+        """
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            raw = client.get_heart_rates(date)
+            if not raw:
+                return _json({"account_id": account_id, "date": date, "message": "No heart rate data available"})
+
+            values = raw.get("heartRateValues") or raw.get("heartRateReadings") or []
+            # Filter out null readings for compactness
+            valid = [v for v in values if v is not None and (isinstance(v, list) and v[1] is not None)]
+
+            return _json(_clean({
+                "account_id": account_id,
+                "date": date,
+                "resting_hr_bpm": raw.get("restingHeartRate"),
+                "max_hr_bpm": raw.get("maxHeartRate"),
+                "min_hr_bpm": raw.get("minHeartRate"),
+                "total_readings": len(values),
+                "valid_readings": len(valid),
+                "readings": valid,
+                "legend": {"readings": "[timestamp_ms, hr_bpm]"},
+            }))
+        except Exception as err:
+            return service_error_result(str(err))
+
+    @app.tool(
+        annotations=_read_annotations("Get Stress Level Timeseries"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def get_stress_data(
+        account_id: str,
+        date: str,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Get stress level timeseries for a date (3-minute interval readings).
+
+        Returns average stress level for the day and the per-interval readings array.
+        Each reading is [timestamp_ms, stress_level] where -1 = activity/no data,
+        0–25 = rest, 26–50 = low stress, 51–75 = medium, 76–100 = high stress.
+        """
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            raw = client.get_stress_data(date)
+            if not raw:
+                return _json({"account_id": account_id, "date": date, "message": "No stress data available"})
+
+            values = raw.get("stressValuesArray") or []
+            # Keep only readings with non-negative stress (skip unmeasured/activity intervals)
+            measured = [v for v in values if v is not None and isinstance(v, list) and len(v) >= 2 and v[1] >= 0]
+
+            return _json(_clean({
+                "account_id": account_id,
+                "date": date,
+                "avg_stress_level": raw.get("avgStressLevel"),
+                "max_stress_level": raw.get("maxStressLevel"),
+                "total_readings": len(values),
+                "measured_readings": len(measured),
+                "stress_qualifier": raw.get("stressQualifier"),
+                "readings": measured,
+                "legend": {
+                    "readings": "[timestamp_ms, stress_level]",
+                    "stress_level": "0-25=rest, 26-50=low, 51-75=medium, 76-100=high, -1=activity/no data",
+                },
+            }))
+        except Exception as err:
+            return service_error_result(str(err))
+
+    @app.tool(
+        annotations=_read_annotations("Get Respiration Rate Timeseries"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def get_respiration_data(
+        account_id: str,
+        date: str,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Get respiration rate timeseries for a date (breaths per minute).
+
+        Returns waking/sleeping averages and per-interval readings.
+        Each reading is [timestamp_ms, breaths_per_minute].
+        """
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            raw = client.get_respiration_data(date)
+            if not raw:
+                return _json({"account_id": account_id, "date": date, "message": "No respiration data available"})
+
+            values = (
+                raw.get("respirationValues")
+                or raw.get("respirationValuesArray")
+                or raw.get("respirationReadings")
+                or []
+            )
+            valid = [v for v in values if v is not None and isinstance(v, list) and len(v) >= 2 and v[1] is not None]
+
+            return _json(_clean({
+                "account_id": account_id,
+                "date": date,
+                "avg_waking_brpm": raw.get("avgWakingRespirationValue"),
+                "avg_sleeping_brpm": raw.get("avgSleepingRespirationValue"),
+                "highest_brpm": raw.get("highestRespirationValue"),
+                "lowest_brpm": raw.get("lowestRespirationValue"),
+                "valid_readings": len(valid),
+                "readings": valid,
+                "legend": {"readings": "[timestamp_ms, breaths_per_minute]"},
+            }))
+        except Exception as err:
+            return service_error_result(str(err))
+
+    @app.tool(
+        annotations=_read_annotations("Get SpO2 (Blood Oxygen) Data"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def get_spo2_data(
+        account_id: str,
+        date: str,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Get blood oxygen saturation (SpO2) data for a date.
+
+        Returns sleep-period average SpO2 and hourly averages throughout the day.
+        SpO2 is measured as a percentage (normal range: 95–100%).
+        """
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            raw = client.get_spo2_data(date)
+            if not raw:
+                return _json({"account_id": account_id, "date": date, "message": "No SpO2 data available"})
+
+            sleep_summary = raw.get("SpO2SleepSummary") or {}
+            hourly = raw.get("spO2HourlyAverages") or []
+            # Filter nulls from hourly list
+            valid_hourly = [v for v in hourly if v is not None]
+            continuous = raw.get("continuousReadings") or []
+
+            return _json(_clean({
+                "account_id": account_id,
+                "date": date,
+                "avg_sleep_spo2_pct": sleep_summary.get("averageSpO2"),
+                "lowest_sleep_spo2_pct": sleep_summary.get("lowestSpO2"),
+                "hourly_readings": len(valid_hourly),
+                "hourly_averages": valid_hourly,
+                "continuous_reading_count": len(continuous),
+                "legend": {
+                    "hourly_averages": "[timestamp_ms, spo2_pct]",
+                    "normal_range": "95-100%",
+                },
+            }))
+        except Exception as err:
+            return service_error_result(str(err))
+
     return app
