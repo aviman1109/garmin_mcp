@@ -23,8 +23,10 @@ class GarminAccount:
     is_cn: bool = False
     email: str | None = None
     email_file: str | None = None
+    email_env: str | None = None
     password: str | None = None
     password_file: str | None = None
+    password_env: str | None = None
 
     @property
     def expanded_token_path(self) -> str:
@@ -135,8 +137,10 @@ def _normalize_account(raw: dict[str, Any], token_root: str) -> GarminAccount:
         is_cn=bool(raw.get("is_cn", False)),
         email=raw.get("email"),
         email_file=raw.get("email_file"),
+        email_env=raw.get("email_env"),
         password=raw.get("password"),
         password_file=raw.get("password_file"),
+        password_env=raw.get("password_env"),
     )
 
 

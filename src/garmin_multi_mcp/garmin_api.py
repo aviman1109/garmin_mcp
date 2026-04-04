@@ -15,11 +15,14 @@ from garth.exc import GarthHTTPError
 from garmin_multi_mcp.config import GarminAccount
 
 
-def resolve_value(raw: str | None, file_path: str | None) -> str | None:
-    """Resolve a value directly or from a file path."""
+def resolve_value(raw: str | None, file_path: str | None, env_var: str | None = None) -> str | None:
+    """Resolve a value directly, from a file path, or from an environment variable."""
 
-    if raw and file_path:
-        raise ValueError("Only one of direct value and file path may be provided")
+    sources = sum(1 for s in (raw, file_path, env_var) if s)
+    if sources > 1:
+        raise ValueError("Only one of direct value, file path, and env var may be provided")
+    if env_var:
+        return os.environ.get(env_var) or None
     if file_path:
         return Path(os.path.expanduser(file_path)).read_text().rstrip()
     return raw
@@ -132,8 +135,8 @@ def authenticate_account(
         if token_exists(account):
             print(f"Existing tokens are invalid for {account.account_id}: {error}")
 
-    email = resolve_value(account.email, account.email_file) or os.getenv("GARMIN_EMAIL")
-    password = resolve_value(account.password, account.password_file) or os.getenv("GARMIN_PASSWORD")
+    email = resolve_value(account.email, account.email_file, account.email_env) or os.getenv("GARMIN_EMAIL")
+    password = resolve_value(account.password, account.password_file, account.password_env) or os.getenv("GARMIN_PASSWORD")
 
     if not email:
         email = input("Email: ").strip()

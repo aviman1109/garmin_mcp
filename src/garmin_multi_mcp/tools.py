@@ -534,9 +534,250 @@ def register_tools(
         except Exception as err:
             return service_error_result(str(err))
 
+    @app.tool(
+        annotations=_read_annotations("Get Activity Typed Splits"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def get_activity_typed_splits(
+        account_id: str,
+        activity_id: int,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Get typed splits for one activity (e.g. run vs walk intervals, active vs rest)."""
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            raw = client.get_activity_typed_splits(activity_id)
+            return _json({"account_id": account_id, "activity_id": activity_id, "typed_splits": raw})
+        except Exception as err:
+            return service_error_result(str(err))
+
+    @app.tool(
+        annotations=_read_annotations("Get Activity HR Zones"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def get_activity_hr_zones(
+        account_id: str,
+        activity_id: int,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Get heart rate zone distribution for one activity (time spent in each HR zone)."""
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            raw = client.get_activity_hr_in_timezones(activity_id)
+            zones = []
+            for zone in (raw or []):
+                zones.append(_clean({
+                    "zone": zone.get("zoneNumber"),
+                    "zone_low_bpm": zone.get("zoneLowBoundary"),
+                    "zone_high_bpm": zone.get("zoneHighBoundary"),
+                    "seconds_in_zone": zone.get("secsInZone"),
+                }))
+            return _json({"account_id": account_id, "activity_id": activity_id, "hr_zones": zones})
+        except Exception as err:
+            return service_error_result(str(err))
+
+    @app.tool(
+        annotations=_read_annotations("Get Activity Power Zones"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def get_activity_power_zones(
+        account_id: str,
+        activity_id: int,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Get power zone distribution for one activity (time in each power zone). Only available for activities with power data."""
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            raw = client.get_activity_power_in_timezones(activity_id)
+            zones = []
+            for zone in (raw or []):
+                zones.append(_clean({
+                    "zone": zone.get("zoneNumber"),
+                    "zone_low_watts": zone.get("zoneLowBoundary"),
+                    "zone_high_watts": zone.get("zoneHighBoundary"),
+                    "seconds_in_zone": zone.get("secsInZone"),
+                }))
+            return _json({"account_id": account_id, "activity_id": activity_id, "power_zones": zones})
+        except Exception as err:
+            return service_error_result(str(err))
+
+    @app.tool(
+        annotations=_read_annotations("Get Activity Weather"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def get_activity_weather(
+        account_id: str,
+        activity_id: int,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Get weather conditions during one activity (temperature, humidity, wind, conditions)."""
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            raw = client.get_activity_weather(activity_id)
+            if not raw:
+                return _json({"account_id": account_id, "activity_id": activity_id, "message": "No weather data available"})
+            weather = _clean({
+                "temperature_c": raw.get("temp"),
+                "apparent_temperature_c": raw.get("apparentTemp"),
+                "humidity_pct": raw.get("relativeHumidity"),
+                "wind_direction_degrees": raw.get("windDirection"),
+                "wind_speed_mps": raw.get("windSpeed"),
+                "weather_type": raw.get("weatherTypeDTO", {}).get("desc") if raw.get("weatherTypeDTO") else None,
+                "issue_date": raw.get("issueDate"),
+            })
+            return _json({"account_id": account_id, "activity_id": activity_id, "weather": weather})
+        except Exception as err:
+            return service_error_result(str(err))
+
+    @app.tool(
+        annotations=_read_annotations("Get Activity Exercise Sets"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def get_activity_exercise_sets(
+        account_id: str,
+        activity_id: int,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Get exercise sets for a strength/cardio activity (sets, reps, weight, rest time)."""
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            raw = client.get_activity_exercise_sets(activity_id)
+            return _json({"account_id": account_id, "activity_id": activity_id, "exercise_sets": raw})
+        except Exception as err:
+            return service_error_result(str(err))
+
     # -----------------------------------------------------------------------
     # P1 Tools
     # -----------------------------------------------------------------------
+
+    # Mapping from Garmin API metric keys to short field names used in responses.
+    _METRIC_KEY_MAP = {
+        "directTimestamp": "t",
+        "sumElapsedDuration": "s",
+        "sumDistance": "d",
+        "directHeartRate": "hr",
+        "directDoubleCadence": "cad",
+        "directRunCadence": "cad",
+        "directSpeed": "spd",
+        "directGradeAdjustedSpeed": "spd_ga",
+        "directElevation": "ele",
+        "directPower": "pwr",
+        "directStrideLength": "stride",
+        "directVerticalOscillation": "vo_mm",
+        "directGroundContactTime": "gct_ms",
+        "directVerticalRatio": "vr_pct",
+        "directPerformanceCondition": "pc",
+        "directBodyBattery": "bb",
+    }
+
+    _METRIC_LEGEND = {
+        "t": "timestamp_ms", "s": "elapsed_seconds", "d": "distance_meters",
+        "hr": "heart_rate_bpm", "cad": "cadence_spm", "spd": "speed_mps",
+        "spd_ga": "grade_adjusted_speed_mps", "ele": "elevation_m",
+        "pwr": "power_watts", "stride": "stride_length_m",
+        "vo_mm": "vertical_oscillation_mm", "gct_ms": "ground_contact_time_ms",
+        "vr_pct": "vertical_ratio_pct", "pc": "performance_condition",
+        "bb": "body_battery",
+    }
+
+    # Metrics that are always included as context (not filterable).
+    _ALWAYS_INCLUDE = {"t", "s", "d"}
+
+    @app.tool(
+        annotations=_read_annotations("List Activity Metrics"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def list_activity_metrics(
+        account_id: str,
+        activity_id: int,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """List available time-series metrics for one activity.
+
+        Call this first to discover which metrics an activity has,
+        then use get_activity_details with a metrics filter to fetch specific ones.
+        """
+
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            raw = client.get_activity_details(activity_id, maxchart=1, maxpoly=0)
+            if not raw:
+                return _json({"account_id": account_id, "activity_id": activity_id, "message": "No detail data available"})
+
+            descriptors = raw.get("metricDescriptors", [])
+            available = []
+            for d in descriptors:
+                garmin_key = d["key"]
+                short = _METRIC_KEY_MAP.get(garmin_key)
+                if short:
+                    available.append({
+                        "key": short,
+                        "description": _METRIC_LEGEND.get(short, garmin_key),
+                        "filterable": short not in _ALWAYS_INCLUDE,
+                    })
+
+            return _json({
+                "account_id": account_id,
+                "activity_id": activity_id,
+                "total_datapoints": raw.get("totalMetricsCount", 0),
+                "available_metrics": available,
+                "usage_hint": "Pass metric keys (e.g. metrics=['hr','spd','ele']) to get_activity_details to fetch specific metrics with higher resolution.",
+            })
+        except Exception as err:
+            return service_error_result(str(err))
 
     @app.tool(
         annotations=_read_annotations("Get Activity Time-Series Details"),
@@ -547,13 +788,18 @@ def register_tools(
         account_id: str,
         activity_id: int,
         max_datapoints: int = 200,
+        metrics: list[str] | None = None,
         ctx: Context | None = None,
     ) -> str | CallToolResult:
         """Get time-series for one activity: heart rate, cadence, pace, power, stride length, elevation.
 
         Returns sampled data points with named metric fields.
         max_datapoints controls sampling density (default 200, max ~2000).
-        For a full-resolution dump use max_datapoints=2000 (response will be large).
+
+        metrics: optional list of short metric keys to include (e.g. ["hr", "spd", "ele"]).
+        When set, only those metrics (plus t/s/d context) are returned — this keeps
+        the response small so you can request more datapoints per call.
+        Use list_activity_metrics to discover available keys for an activity.
         """
 
         auth_error = require_account_access(
@@ -562,6 +808,12 @@ def register_tools(
         )
         if auth_error:
             return auth_error
+
+        # Build the set of short keys to include in the response.
+        if metrics:
+            include_keys = _ALWAYS_INCLUDE | set(metrics)
+        else:
+            include_keys = None  # include everything
 
         def _r(v, digits=1):
             """Round a float value; return None if falsy."""
@@ -585,7 +837,8 @@ def register_tools(
                 m = item["metrics"]
                 ts_ms = _get(m, "directTimestamp")
                 cadence = _get(m, "directDoubleCadence") or ((_get(m, "directRunCadence") or 0) * 2 or None)
-                points.append(_clean({
+
+                row = {
                     "t": int(ts_ms) if ts_ms else None,
                     "s": _r(_get(m, "sumElapsedDuration"), 0),
                     "d": _r(_get(m, "sumDistance"), 1),
@@ -601,22 +854,22 @@ def register_tools(
                     "vr_pct": _r(_get(m, "directVerticalRatio"), 1),
                     "pc": _r(_get(m, "directPerformanceCondition"), 0),
                     "bb": _r(_get(m, "directBodyBattery"), 0),
-                }))
+                }
 
-            legend = {
-                "t": "timestamp_ms", "s": "elapsed_seconds", "d": "distance_meters",
-                "hr": "heart_rate_bpm", "cad": "cadence_spm", "spd": "speed_mps",
-                "spd_ga": "grade_adjusted_speed_mps", "ele": "elevation_m",
-                "pwr": "power_watts", "stride": "stride_length_m",
-                "vo_mm": "vertical_oscillation_mm", "gct_ms": "ground_contact_time_ms",
-                "vr_pct": "vertical_ratio_pct", "pc": "performance_condition",
-                "bb": "body_battery",
-            }
+                if include_keys:
+                    row = {k: v for k, v in row.items() if k in include_keys}
+
+                points.append(_clean(row))
+
+            legend = {k: v for k, v in _METRIC_LEGEND.items()
+                      if include_keys is None or k in include_keys}
+
             return _json({
                 "account_id": account_id,
                 "activity_id": activity_id,
                 "total_datapoints": raw.get("totalMetricsCount", len(points)),
                 "returned_datapoints": len(points),
+                "filtered_metrics": metrics,
                 "legend": legend,
                 "timeseries": points,
             })
@@ -1545,6 +1798,334 @@ def register_tools(
                 ImageContent(type="image", data=png_b64, mimeType="image/png")
             ])
 
+        except Exception as err:
+            return service_error_result(str(err))
+
+    # ── Workout creation ──────────────────────────────────────────────────
+
+    _SPORT_TYPES = {
+        "cycling": {"sportTypeId": 2, "sportTypeKey": "cycling", "displayOrder": 2},
+        "running": {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1},
+        "swimming": {"sportTypeId": 5, "sportTypeKey": "swimming", "displayOrder": 5},
+    }
+    _STEP_TYPES = {
+        "warmup":   {"stepTypeId": 1, "stepTypeKey": "warmup",   "displayOrder": 1},
+        "cooldown": {"stepTypeId": 2, "stepTypeKey": "cooldown", "displayOrder": 2},
+        "interval": {"stepTypeId": 3, "stepTypeKey": "interval", "displayOrder": 3},
+        "recovery": {"stepTypeId": 4, "stepTypeKey": "recovery", "displayOrder": 4},
+        "rest":     {"stepTypeId": 5, "stepTypeKey": "rest",     "displayOrder": 5},
+    }
+    _END_CONDITION_TIME = {
+        "conditionTypeId": 2,
+        "conditionTypeKey": "time",
+        "displayOrder": 2,
+        "displayable": True,
+    }
+    _TARGET_NO_TARGET = {
+        "workoutTargetTypeId": 1,
+        "workoutTargetTypeKey": "no.target",
+        "displayOrder": 1,
+    }
+    # Cycling-specific target type IDs (differ from running)
+    _TARGET_POWER = {
+        "workoutTargetTypeId": 2,
+        "workoutTargetTypeKey": "power.zone",
+        "displayOrder": 2,
+    }
+    _TARGET_HR = {
+        "workoutTargetTypeId": 4,
+        "workoutTargetTypeKey": "heart.rate.zone",
+        "displayOrder": 4,
+    }
+
+    @app.tool(
+        annotations={
+            "title": "Create Garmin Workout",
+            "readOnlyHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+            "destructiveHint": False,
+        },
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def create_workout(
+        account_id: str,
+        name: str,
+        sport: str,
+        steps_json: str,
+        description: str = "",
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Create a structured workout on Garmin Connect and return the workout ID.
+
+        sport: "cycling" | "running" | "swimming"
+
+        steps_json: JSON array of step objects. Each step:
+          {
+            "type": "warmup" | "interval" | "recovery" | "cooldown" | "rest",
+            "duration_secs": <int>,
+            "power_low": <float, optional — watts>,
+            "power_high": <float, optional — watts>,
+            "hr_low": <float, optional — bpm>,
+            "hr_high": <float, optional — bpm>
+          }
+
+        Example steps_json for a 4h Z2 ride:
+          [
+            {"type": "warmup",   "duration_secs": 1200, "power_low": 100, "power_high": 130},
+            {"type": "interval", "duration_secs": 2400, "power_low": 140, "power_high": 145},
+            {"type": "interval", "duration_secs": 3600, "power_low": 155, "power_high": 165},
+            {"type": "cooldown", "duration_secs": 1200, "power_low": 100, "power_high": 130}
+          ]
+        """
+
+        auth_error = require_account_access(
+            auth_config,
+            authz_policy,
+            account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope],
+            ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            import json as _json_mod
+
+            sport_key = sport.lower()
+            if sport_key not in _SPORT_TYPES:
+                return service_error_result(
+                    f"Unknown sport '{sport}'. Use: {', '.join(_SPORT_TYPES)}"
+                )
+            sport_type = _SPORT_TYPES[sport_key]
+
+            raw_steps = _json_mod.loads(steps_json)
+            if not isinstance(raw_steps, list) or not raw_steps:
+                return service_error_result("steps_json must be a non-empty JSON array")
+
+            workout_steps = []
+            total_secs = 0
+            for i, s in enumerate(raw_steps, start=1):
+                step_key = str(s.get("type", "interval")).lower()
+                if step_key not in _STEP_TYPES:
+                    return service_error_result(
+                        f"Step {i}: unknown type '{step_key}'. Use: {', '.join(_STEP_TYPES)}"
+                    )
+                dur = float(s.get("duration_secs", 0))
+                if dur <= 0:
+                    return service_error_result(f"Step {i}: duration_secs must be > 0")
+                total_secs += int(dur)
+
+                has_power = "power_low" in s or "power_high" in s
+                has_hr = "hr_low" in s or "hr_high" in s
+
+                if has_power:
+                    target_type = _TARGET_POWER
+                    target_low = float(s.get("power_low", 0))
+                    target_high = float(s.get("power_high", target_low))
+                elif has_hr:
+                    target_type = _TARGET_HR
+                    target_low = float(s.get("hr_low", 0))
+                    target_high = float(s.get("hr_high", target_low))
+                else:
+                    target_type = _TARGET_NO_TARGET
+                    target_low = None
+                    target_high = None
+
+                step: dict[str, Any] = {
+                    "type": "ExecutableStepDTO",
+                    "stepOrder": i,
+                    "stepType": _STEP_TYPES[step_key],
+                    "endCondition": _END_CONDITION_TIME,
+                    "endConditionValue": dur,
+                    "targetType": target_type,
+                }
+                if target_low is not None:
+                    step["targetValueOne"] = target_low
+                    step["targetValueTwo"] = target_high
+
+                workout_steps.append(step)
+
+            workout_payload: dict[str, Any] = {
+                "workoutName": name,
+                "description": description,
+                "estimatedDurationInSecs": total_secs,
+                "sportType": sport_type,
+                "workoutSegments": [
+                    {
+                        "segmentOrder": 1,
+                        "sportType": sport_type,
+                        "workoutSteps": workout_steps,
+                    }
+                ],
+            }
+
+            client = manager.get_client(account_id)
+            result = client.upload_workout(workout_payload)
+            return _json({"account_id": account_id, "workout": result})  # outer _json helper
+
+        except Exception as err:
+            return service_error_result(str(err))
+
+    @app.tool(
+        annotations=_read_annotations("List Garmin Workouts"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def list_workouts(
+        account_id: str,
+        limit: int = 20,
+        start: int = 0,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """List saved workouts on Garmin Connect.
+
+        Returns workoutId, workoutName, sport, estimatedDurationInSecs, createdDate.
+        Use limit/start for pagination.
+        """
+        auth_error = require_account_access(
+            auth_config,
+            authz_policy,
+            account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope],
+            ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            workouts = client.get_workouts(start, limit)
+            summary = [
+                {
+                    "workoutId": w.get("workoutId"),
+                    "workoutName": w.get("workoutName"),
+                    "sport": w.get("sportType", {}).get("sportTypeKey"),
+                    "estimatedDurationInSecs": w.get("estimatedDurationInSecs"),
+                    "createdDate": w.get("createdDate"),
+                }
+                for w in (workouts or [])
+            ]
+            return _json({"account_id": account_id, "count": len(summary), "workouts": summary})
+        except Exception as err:
+            return service_error_result(str(err))
+
+    @app.tool(
+        annotations=_read_annotations("Get Garmin Workout Detail"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def get_workout(
+        account_id: str,
+        workout_id: int,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Get full detail of a saved Garmin workout by ID, including all steps and targets."""
+        auth_error = require_account_access(
+            auth_config,
+            authz_policy,
+            account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope],
+            ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            result = client.get_workout_by_id(workout_id)
+            return _json({"account_id": account_id, "workout": result})
+        except Exception as err:
+            return service_error_result(str(err))
+
+    @app.tool(
+        annotations={
+            "title": "Delete Garmin Workout",
+            "readOnlyHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+            "destructiveHint": True,
+        },
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def delete_workout(
+        account_id: str,
+        workout_id: int,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Delete a saved workout from Garmin Connect by ID. Irreversible."""
+        auth_error = require_account_access(
+            auth_config,
+            authz_policy,
+            account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope],
+            ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            resp = client.garth.request(
+                "DELETE", "connectapi", f"/workout-service/workout/{workout_id}", api=True
+            )
+            return _json({
+                "account_id": account_id,
+                "workout_id": workout_id,
+                "deleted": resp.status_code == 204,
+                "status_code": resp.status_code,
+            })
+        except Exception as err:
+            return service_error_result(str(err))
+
+    @app.tool(
+        annotations={
+            "title": "Schedule Garmin Workout",
+            "readOnlyHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+            "destructiveHint": False,
+        },
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def schedule_workout(
+        account_id: str,
+        workout_id: int,
+        date: str,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Schedule a saved workout to a specific calendar date on Garmin Connect.
+
+        date: ISO format YYYY-MM-DD
+        The workout will appear in the Garmin Connect calendar and sync to the device.
+        """
+        auth_error = require_account_access(
+            auth_config,
+            authz_policy,
+            account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope],
+            ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        try:
+            client = manager.get_client(account_id)
+            resp = client.garth.post(
+                "connectapi",
+                f"/workout-service/schedule/{workout_id}",
+                json={"date": date},
+                api=True,
+            )
+            return _json({
+                "account_id": account_id,
+                "workout_id": workout_id,
+                "scheduled_date": date,
+                "result": resp.json() if resp.content else {"status": "scheduled"},
+            })
         except Exception as err:
             return service_error_result(str(err))
 
