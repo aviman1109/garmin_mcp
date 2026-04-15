@@ -1,18 +1,29 @@
-"""Garmin account registry and client helpers."""
+"""Garmin account registry and client helpers.
+
+All Garmin Connect access flows through ``garminconnect.Garmin``; direct
+``import garth`` is deliberately avoided. ``GarthHTTPError`` is the only
+garth surface we touch and it's re-exported here so callers never import
+garth directly.
+"""
 
 from __future__ import annotations
 
 import io
+import logging
 import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any, Callable, TypeVar
 
 import requests
 from garminconnect import Garmin, GarminConnectAuthenticationError
-from garth.exc import GarthHTTPError
+from garth.exc import GarthHTTPError  # re-exported — do not import garth elsewhere
 
 from garmin_multi_mcp.config import GarminAccount
+
+log = logging.getLogger("garmin_multi_mcp.api")
+T = TypeVar("T")
 
 
 def resolve_value(raw: str | None, file_path: str | None, env_var: str | None = None) -> str | None:
@@ -167,3 +178,39 @@ def authenticate_account(
         requests.exceptions.HTTPError,
     ) as err:
         return False, str(err)
+
+
+def _is_auth_failure(exc: BaseException) -> bool:
+    """Identify auth failures worth a one-shot re-login retry (401 / bad token)."""
+    if isinstance(exc, GarminConnectAuthenticationError):
+        return True
+    if isinstance(exc, GarthHTTPError):
+        err = getattr(exc, "error", None)
+        resp = getattr(err, "response", None) if err else None
+        if resp is not None and getattr(resp, "status_code", 0) == 401:
+            return True
+        # GarthHTTPError without a response object usually wraps an upstream 401
+        return "401" in str(exc)
+    return False
+
+
+def with_auth_retry(
+    manager: "GarminClientManager",
+    account_id: str | None,
+    fn: Callable[[Garmin], T],
+) -> T:
+    """Run ``fn(client)`` once; on a 401 / auth failure, force a re-login and retry once.
+
+    This is the supported path for making calls that would otherwise raise when
+    Garmin's session cookies rotate mid-flight. Any failure on the retry is
+    propagated unchanged so the caller still gets the original exception.
+    """
+    client = manager.get_client(account_id)
+    try:
+        return fn(client)
+    except Exception as exc:  # noqa: BLE001 — classifier below is specific
+        if not _is_auth_failure(exc):
+            raise
+        log.warning("garmin auth failure for %s (%s) — refreshing client", account_id, type(exc).__name__)
+        client = manager.get_client(account_id, refresh=True)
+        return fn(client)

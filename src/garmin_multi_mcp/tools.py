@@ -19,7 +19,7 @@ from garmin_multi_mcp.auth.oidc import get_current_principal
 from garmin_multi_mcp.auth.policy import AuthorizationPolicy
 from garmin_multi_mcp.auth.protected_resource import service_error_result
 from garmin_multi_mcp.auth.runtime import require_account_access, require_scope, tool_security_meta
-from garmin_multi_mcp.garmin_api import GarminClientManager
+from garmin_multi_mcp.garmin_api import GarminClientManager, with_auth_retry
 from garmin_multi_mcp.config import OIDCConfig
 
 
@@ -2141,9 +2141,11 @@ def register_tools(
             return auth_error
 
         try:
-            client = manager.get_client(account_id)
-            resp = client.garth.request(
-                "DELETE", "connectapi", f"/workout-service/workout/{workout_id}", api=True
+            resp = with_auth_retry(
+                manager, account_id,
+                lambda c: c.garth.request(
+                    "DELETE", "connectapi", f"/workout-service/workout/{workout_id}", api=True
+                ),
             )
             return _json({
                 "account_id": account_id,
@@ -2187,12 +2189,14 @@ def register_tools(
             return auth_error
 
         try:
-            client = manager.get_client(account_id)
-            resp = client.garth.post(
-                "connectapi",
-                f"/workout-service/schedule/{workout_id}",
-                json={"date": date},
-                api=True,
+            resp = with_auth_retry(
+                manager, account_id,
+                lambda c: c.garth.post(
+                    "connectapi",
+                    f"/workout-service/schedule/{workout_id}",
+                    json={"date": date},
+                    api=True,
+                ),
             )
             return _json({
                 "account_id": account_id,
