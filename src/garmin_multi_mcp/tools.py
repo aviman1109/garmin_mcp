@@ -1167,7 +1167,11 @@ def register_tools(
                 "score": score_summary,
                 "breathing": breathing if any(breathing.values()) else None,
                 "avg_spo2": dto.get("averageSpO2Value"),
-                "avg_hrv_ms": dto.get("avgSleepStress"),  # approximation via sleep stress
+                "avg_heart_rate": dto.get("avgHeartRate"),
+                "resting_heart_rate": raw.get("restingHeartRate"),
+                "avg_overnight_hrv_ms": raw.get("avgOvernightHrv"),
+                "hrv_status": raw.get("hrvStatus"),
+                "avg_sleep_stress": dto.get("avgSleepStress"),
             }))
         except Exception as err:
             return service_error_result(str(err))
@@ -1368,6 +1372,76 @@ def register_tools(
                     "hourly_averages": "[timestamp_ms, spo2_pct]",
                     "normal_range": "95-100%",
                 },
+            }))
+        except Exception as err:
+            return service_error_result(str(err))
+
+    @app.tool(
+        annotations=_read_annotations("Get Body Composition"),
+        meta=tool_security_meta(auth_config, required_scopes=[auth_config.fitness_read_scope]),
+        structured_output=False,
+    )
+    async def get_body_composition(
+        account_id: str,
+        start_date: str,
+        end_date: str | None = None,
+        ctx: Context | None = None,
+    ) -> str | CallToolResult:
+        """Get body composition measurements from a Garmin Index scale.
+
+        Returns weight, body fat %, muscle mass, bone mass, body water %,
+        BMI, and visceral fat for each weigh-in in the date range.
+
+        start_date: YYYY-MM-DD (required)
+        end_date:   YYYY-MM-DD (optional; defaults to start_date for a single day)
+        """
+        auth_error = require_account_access(
+            auth_config, authz_policy, account_id=account_id,
+            required_scopes=[auth_config.fitness_read_scope], ctx=ctx,
+        )
+        if auth_error:
+            return auth_error
+
+        if end_date is None:
+            end_date = start_date
+
+        try:
+            client = manager.get_client(account_id)
+            raw = client.get_body_composition(start_date, end_date)
+            if not raw:
+                return _json({"account_id": account_id, "start_date": start_date,
+                               "end_date": end_date, "message": "No body composition data available"})
+
+            entries = raw.get("dateWeightList") or []
+            parsed = []
+            for e in entries:
+                parsed.append(_clean({
+                    "date":            e.get("calendarDate"),
+                    "weight_kg":       round(e["weight"] / 1000, 2) if e.get("weight") else None,
+                    "bmi":             e.get("bmi"),
+                    "body_fat_pct":    e.get("bodyFat"),
+                    "body_water_pct":  e.get("bodyWater"),
+                    "muscle_mass_kg":  round(e["muscleMass"] / 1000, 2) if e.get("muscleMass") else None,
+                    "bone_mass_kg":    round(e["boneMass"] / 1000, 2) if e.get("boneMass") else None,
+                    "visceral_fat":    e.get("visceralFat"),
+                    "metabolic_age":   e.get("metabolicAge"),
+                    "source":          e.get("sourceType"),
+                }))
+
+            avg = raw.get("totalAverage") or {}
+            return _json(_clean({
+                "account_id":  account_id,
+                "start_date":  start_date,
+                "end_date":    end_date,
+                "entries":     parsed,
+                "average": _clean({
+                    "weight_kg":      round(avg["weight"] / 1000, 2) if avg.get("weight") else None,
+                    "bmi":            avg.get("bmi"),
+                    "body_fat_pct":   avg.get("bodyFat"),
+                    "body_water_pct": avg.get("bodyWater"),
+                    "muscle_mass_kg": round(avg["muscleMass"] / 1000, 2) if avg.get("muscleMass") else None,
+                    "bone_mass_kg":   round(avg["boneMass"] / 1000, 2) if avg.get("boneMass") else None,
+                }),
             }))
         except Exception as err:
             return service_error_result(str(err))
